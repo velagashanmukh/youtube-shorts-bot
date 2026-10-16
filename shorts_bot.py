@@ -7,10 +7,9 @@ import datetime
 import random
 import numpy as np
 import edge_tts
-from urllib.parse import quote_plus
+import urllib.parse
 from google import genai
 from google.genai import types
-from openai import OpenAI
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -24,7 +23,6 @@ from moviepy.video.fx import Resize
 
 # ─── CONFIGURATION ───────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-META_API_KEY = os.environ.get("META_API_KEY")
 YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
 YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
@@ -71,7 +69,7 @@ Output ONLY raw valid JSON:
   "voiceover_script": "Full continuous spoken script text",
   "scenes": ["visual prompt one", "visual prompt two", "visual prompt three"]
 }}"""
-    # Use only reliable current models
+    
     fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
     for model_name in fallback_models:
@@ -112,32 +110,28 @@ async def make_tts(text, output="audio.mp3"):
     print(f"✅ Voiceover saved with {len(timings)} word timings.")
     return output, timings
 
-# ─── 4. AI SCENE GENERATION (Using Meta Muse Image API) ──────────────────────
+# ─── 4. FREE AI SCENE GENERATION (Pollinations.ai - No API Key) ──────────────
 def generate_ai_image(prompt, index):
     filename = f"scene_{index}.jpg"
     print(f"🎨 Generating AI image for scene {index + 1}: '{prompt}'...")
+    
     try:
-        # Meta Model API is OpenAI-compatible
-        client = OpenAI(api_key=META_API_KEY, base_url="https://api.meta.ai/v1")
-        response = client.images.generate(
-            model="muse-image-1.0",
-            prompt=prompt,
-            size="1024x1792", # Vertical aspect ratio
-            response_format="url"
-        )
-        image_url = response.data[0].url
-        img_data = requests.get(image_url, timeout=30).content
-        with open(filename, "wb") as f:
-            f.write(img_data)
-        print(f"✅ Scene {index + 1} image generated.")
-        return filename
+        encoded_prompt = urllib.parse.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&nologo=true"
+        resp = requests.get(url, timeout=60)
+        if resp.status_code == 200 and len(resp.content) > 5000:
+            with open(filename, "wb") as f:
+                f.write(resp.content)
+            print(f"✅ Scene {index + 1} image generated.")
+            return filename
     except Exception as e:
-        print(f"⚠️ Meta Image failed: {e}")
-        # Fallback: create a solid color image
-        from PIL import Image
-        img = Image.new('RGB', (1080, 1920), color=(15, 15, 35))
-        img.save(filename)
-        return filename
+        print(f"⚠️ Image generation failed: {e}")
+
+    # Fallback: Solid color image if Pollinations fails
+    from PIL import Image
+    img = Image.new('RGB', (1080, 1920), color=(15, 15, 35))
+    img.save(filename)
+    return filename
 
 # ─── 5. MUSIC & SFX (Stable Public URLs) ─────────────────────────────────────
 def download_music():
