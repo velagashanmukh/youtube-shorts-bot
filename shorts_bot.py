@@ -168,7 +168,6 @@ def generate_ai_image(prompt, index):
     except Exception as e:
         print(f"⚠️ Image generation failed: {e}")
 
-    # Fallback: Solid color image
     from PIL import Image
     img = Image.new('RGB', (1080, 1920), color=(15, 15, 35))
     img.save(filename)
