@@ -1,0 +1,11 @@
+moviepy==2.1.1
+pillow==12.0.0
+google-genai
+edge-tts
+feedparser
+google-api-python-client
+google-auth-oauthlib
+opencv-python
+requests
+numpy
+scipy
