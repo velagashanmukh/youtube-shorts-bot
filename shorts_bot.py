@@ -10,6 +10,7 @@ import edge_tts
 import urllib.parse
 from google import genai
 from google.genai import types
+from openai import OpenAI
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -20,12 +21,29 @@ from moviepy import (
     concatenate_videoclips, ColorClip, CompositeAudioClip, ImageClip
 )
 from moviepy.video.fx import Resize
+from moviepy.audio.AudioClip import AudioClip
 
 # ─── CONFIGURATION ───────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
 YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
+
+# ─── SFX LIBRARY (CC0 / Public Domain) ───────────────────────────────────────
+SFX_URLS = {
+    "boom": "https://tryelements.dev/sfx/boom.mp3",
+    "whoosh": "https://tryelements.dev/sfx/whoosh.mp3",
+    "riser": "https://tryelements.dev/sfx/riser.mp3",
+    "ding": "https://tryelements.dev/sfx/notification.mp3",
+    "success": "https://tryelements.dev/sfx/success.mp3",
+    "click": "https://tryelements.dev/sfx/click.mp3",
+    "pop": "https://tryelements.dev/sfx/pop.mp3",
+}
+
+MONEY_WORDS = {"money", "dollar", "dollars", "profit", "wealth", "rich", "cash", "price", "revenue", "billion", "million", "rupee", "rupees", "invest"}
+THREAT_WORDS = {"threat", "danger", "risk", "warning", "crash", "collapse", "crisis", "scam", "hide", "hidden", "secret", "lost", "lose"}
+REVEAL_WORDS = {"secret", "truth", "now", "reveal", "discover", "find", "learn", "watch"}
 
 # ─── 1. TREND ENGINE ─────────────────────────────────────────────────────────
 def fetch_live_trending_topic():
@@ -49,10 +67,9 @@ def fetch_live_trending_topic():
         print(f"⚠️ Trend fetch fallback: {e}")
         return f"The Latest Major Breakthrough in {niche}", time_label
 
-# ─── 2. GEMINI SCRIPT ────────────────────────────────────────────────────────
+# ─── 2. SCRIPT GENERATION (Groq + Gemini Fallback) ───────────────────────────
 def generate_storyboard(headline, label):
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    print("🧠 Directing script with Gemini...")
+    print("🧠 Directing script...")
     
     prompt = f"""You are an elite YouTube Shorts retention psychologist.
 Topic: [{headline}] ({label})
@@ -69,24 +86,48 @@ Output ONLY raw valid JSON:
   "voiceover_script": "Full continuous spoken script text",
   "scenes": ["visual prompt one", "visual prompt two", "visual prompt three"]
 }}"""
-    
-    fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
-    for model_name in fallback_models:
+    # --- Attempt 1: Groq (OpenAI-compatible) ---
+    if GROQ_API_KEY:
         try:
-            print(f"🧠 Trying {model_name}...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.7)
+            groq_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+            print("🧠 Trying Groq (llama-3.3-70b)...")
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.7
             )
-            data = json.loads(response.text)
-            print(f"✅ Script generated: {data['title']}")
+            data = json.loads(response.choices[0].message.content)
+            print(f"✅ Script generated with Groq: {data['title']}")
             return data
         except Exception as e:
-            print(f"⚠️ {model_name} failed: {e}")
-            continue
+            print(f"⚠️ Groq failed: {e}")
 
+    # --- Attempt 2: Gemini Fallback ---
+    if GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+            for model_name in fallback_models:
+                try:
+                    print(f"🧠 Trying {model_name}...")
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.7)
+                    )
+                    data = json.loads(response.text)
+                    print(f"✅ Script generated with {model_name}: {data['title']}")
+                    return data
+                except Exception as e:
+                    print(f"⚠️ {model_name} failed: {e}")
+                    continue
+        except Exception as e:
+            print(f"⚠️ Gemini fallback failed: {e}")
+
+    # --- Final Fallback ---
+    print("❌ All AI providers failed. Using fallback script.")
     return {
         "title": "THE SECRET THEY HIDE",
         "description": "Automated Short #Shorts",
@@ -127,16 +168,56 @@ def generate_ai_image(prompt, index):
     except Exception as e:
         print(f"⚠️ Image generation failed: {e}")
 
-    # Fallback: Solid color image if Pollinations fails
+    # Fallback: Solid color image
     from PIL import Image
     img = Image.new('RGB', (1080, 1920), color=(15, 15, 35))
     img.save(filename)
     return filename
 
-# ─── 5. MUSIC & SFX (Stable Public URLs) ─────────────────────────────────────
+# ─── 5. SFX MANAGER ──────────────────────────────────────────────────────────
+def download_sfx(name):
+    path = f"sfx_{name}.mp3"
+    if os.path.exists(path):
+        return path
+    url = SFX_URLS.get(name)
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            with open(path, "wb") as f:
+                f.write(resp.content)
+            print(f"✅ SFX downloaded: {name}")
+            return path
+    except Exception as e:
+        print(f"⚠️ SFX '{name}' failed: {e}")
+    return None
+
+def build_sfx_timeline(timings, final_duration):
+    timeline = []
+    timeline.append(("boom", 0.0, 0.9))
+    t = 1.5
+    while t < final_duration:
+        timeline.append(("whoosh", t, 0.35))
+        t += 1.5
+    if timings:
+        for item in timings:
+            word = item["word"].lower().strip(".,!?")
+            t = item["start"]
+            if word in MONEY_WORDS:
+                timeline.append(("success", t, 0.6))
+            if word in THREAT_WORDS:
+                timeline.append(("click", t, 0.4))
+            if word in REVEAL_WORDS:
+                timeline.append(("ding", t, 0.5))
+    if final_duration > 3:
+        timeline.append(("riser", max(0, final_duration - 2.5), 0.45))
+    timeline.append(("pop", max(0, final_duration - 0.3), 0.7))
+    return timeline
+
+# ─── 6. BACKGROUND MUSIC ─────────────────────────────────────────────────────
 def download_music():
     print("🎵 Fetching background music...")
-    # Known stable royalty-free MP3
     music_url = "https://www.learningcontainer.com/wp-content/uploads/2020/02/Kalimba.mp3"
     try:
         resp = requests.get(music_url, timeout=15)
@@ -147,54 +228,35 @@ def download_music():
             return "bg_music.mp3"
     except Exception as e:
         print(f"⚠️ Music failed: {e}")
-    
-    # Fallback: silent audio
-    from moviepy.audio.AudioClip import AudioClip
+
     silent = AudioClip(lambda t: 0, duration=30, fps=44100)
     silent.write_audiofile("bg_music.mp3", logger=None)
     print("⚠️ Using silent fallback audio.")
     return "bg_music.mp3"
 
-def download_whoosh():
-    print("🔊 Fetching whoosh SFX...")
-    whoosh_url = "https://www.soundjay.com/button/sounds/button-16.mp3"
-    try:
-        resp = requests.get(whoosh_url, timeout=15)
-        if resp.status_code == 200:
-            with open("whoosh.mp3", "wb") as f:
-                f.write(resp.content)
-            print("✅ Whoosh downloaded.")
-            return "whoosh.mp3"
-    except Exception as e:
-        print(f"⚠️ Whoosh failed: {e}")
-    return None
-
-# ─── 6. RENDER ENGINE ────────────────────────────────────────────────────────
+# ─── 7. RENDER ENGINE ────────────────────────────────────────────────────────
 def render_video(clips, audio_file, timings, metadata, output="final_short.mp4"):
-    print("🎞️ Rendering video...")
-    
-    # Load images and apply rapid cuts
+    print("🎞️ Rendering video with full audio pulse...")
+
     video_clips = []
     for c in clips:
         base_clip = ImageClip(c).with_duration(6).resized(height=1920)
         for start in np.arange(0, base_clip.duration, 1.5):
             end = min(start + 1.5, base_clip.duration)
-            if end - start < 0.5: continue
+            if end - start < 0.5:
+                continue
             segment = base_clip.subclipped(start, end)
-            # Ken Burns effect
             segment = segment.with_effects([Resize(lambda t: min(1.15, 1.0 + t * 0.3))])
             video_clips.append(segment)
-    
+
     random.shuffle(video_clips)
     merged_video = concatenate_videoclips(video_clips, method="compose")
-    audio = AudioFileClip(audio_file)
-    final_duration = min(audio.duration, merged_video.duration)
-    final_video = merged_video.subclipped(0, final_duration).with_audio(audio)
+    voiceover = AudioFileClip(audio_file)
+    final_duration = min(voiceover.duration, merged_video.duration)
+    final_video = merged_video.subclipped(0, final_duration).with_audio(voiceover)
 
-    # Captions (Fallback if timings are empty)
     caption_clips = []
     if not timings:
-        # Create dummy timings if edge-tts failed
         words = metadata["voiceover_script"].split()
         chunk_size = max(1, len(words) // 6)
         time_per_chunk = final_duration / (len(words) / chunk_size)
@@ -221,30 +283,40 @@ def render_video(clips, audio_file, timings, metadata, output="final_short.mp4")
             ).with_position(("center", "center")).with_start(start_time).with_duration(duration)
             caption_clips.append(txt_clip)
 
-    # Music
     try:
-        bg_music = AudioFileClip(download_music()).with_volume_scaled(0.08).with_duration(final_duration)
+        music_path = download_music()
+        bg_music = AudioFileClip(music_path).with_volume_scaled(0.08).with_duration(final_duration)
         final_video = final_video.with_audio(CompositeAudioClip([final_video.audio, bg_music]))
+        print("✅ Background music added.")
     except Exception as e:
         print(f"⚠️ Music mix failed: {e}")
 
-    # Whoosh SFX
-    whoosh_path = download_whoosh()
-    if whoosh_path:
+    print("🔊 Building SFX timeline...")
+    sfx_timeline = build_sfx_timeline(timings, final_duration)
+    sfx_clips = []
+    for name, start_time, volume in sfx_timeline:
+        path = download_sfx(name)
+        if not path:
+            continue
         try:
-            whoosh = AudioFileClip(whoosh_path)
-            sfx_clips = [whoosh.with_start(t).with_volume_scaled(0.3) for t in np.arange(0, final_duration, 1.5) if t + whoosh.duration <= final_duration]
-            if sfx_clips:
-                final_video = final_video.with_audio(CompositeAudioClip([final_video.audio] + sfx_clips))
+            clip = AudioFileClip(path).with_volume_scaled(volume)
+            if start_time + clip.duration > final_duration:
+                clip = clip.with_duration(final_duration - start_time)
+            sfx_clips.append(clip.with_start(start_time))
         except Exception as e:
-            print(f"⚠️ SFX mix failed: {e}")
+            print(f"⚠️ SFX '{name}' mixing failed: {e}")
+
+    if sfx_clips:
+        all_audio = CompositeAudioClip([final_video.audio] + sfx_clips)
+        final_video = final_video.with_audio(all_audio)
+        print(f"✅ {len(sfx_clips)} SFX cues added to the audio pulse.")
 
     rendered = CompositeVideoClip([final_video] + caption_clips)
     rendered.write_videofile(output, fps=30, codec="libx264", audio_codec="aac", threads=4)
     print(f"✨ Final Short rendered: {output}")
     return output
 
-# ─── 7. YOUTUBE UPLOAD ───────────────────────────────────────────────────────
+# ─── 8. YOUTUBE UPLOAD ───────────────────────────────────────────────────────
 def publish_short(video_file, meta):
     print("🚀 Uploading to YouTube...")
     creds = Credentials(
