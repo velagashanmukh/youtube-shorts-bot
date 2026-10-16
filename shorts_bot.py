@@ -10,6 +10,7 @@ import edge_tts
 from urllib.parse import quote_plus
 from google import genai
 from google.genai import types
+from openai import OpenAI
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -17,12 +18,13 @@ from google.oauth2.credentials import Credentials
 
 from moviepy import (
     VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip,
-    concatenate_videoclips, ColorClip, CompositeAudioClip
+    concatenate_videoclips, ColorClip, CompositeAudioClip, ImageClip
 )
 from moviepy.video.fx import Resize
 
 # ─── CONFIGURATION ───────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+META_API_KEY = os.environ.get("META_API_KEY")
 YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN")
 YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
@@ -31,17 +33,13 @@ YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET")
 def fetch_live_trending_topic():
     print("🌍 Fetching live world trends...")
     day_of_week = datetime.datetime.now().weekday()
-
     if day_of_week in [0, 1]:
-        niche = "Technology"
-        rss_url = "https://news.google.com/rss/search?q=Artificial+Intelligence+OR+Technology+when:24h"
+        niche, rss_url = "Technology", "https://news.google.com/rss/search?q=Artificial+Intelligence+OR+Technology+when:24h"
     elif day_of_week in [2, 3]:
-        niche = "Business"
-        rss_url = "https://news.google.com/rss/search?q=Business+OR+Startups+when:24h"
+        niche, rss_url = "Business", "https://news.google.com/rss/search?q=Business+OR+Startups+when:24h"
     else:
-        niche = "Finance"
-        rss_url = "https://news.google.com/rss/search?q=Finance+OR+Crypto+OR+Wealth+when:24h"
-
+        niche, rss_url = "Finance", "https://news.google.com/rss/search?q=Finance+OR+Crypto+OR+Wealth+when:24h"
+    
     time_label = f"{niche} Day"
     try:
         res = requests.get(rss_url, timeout=10)
@@ -65,23 +63,20 @@ Rules:
 - Write in VERY SHORT sentences (3-5 words per sentence).
 - THE LOOP: Final sentence must flow seamlessly back into the first spoken word.
 - HOOK: First 3 words must trigger intense curiosity.
-- SCENES: Exactly 3 visual search keywords.
+- SCENES: Exactly 3 visual prompts for AI image generation.
 Output ONLY raw valid JSON:
 {{
   "title": "Clickbaity high-CTR title under 60 chars",
   "description": "Engaging description with #Shorts #Trending",
   "voiceover_script": "Full continuous spoken script text",
-  "scenes": ["keyword one", "keyword two", "keyword three"]
+  "scenes": ["visual prompt one", "visual prompt two", "visual prompt three"]
 }}"""
-    try:
-        available = [m.name.replace('models/', '') for m in client.models.list() if 'generateContent' in m.supported_actions]
-        flash_models = [m for m in available if 'flash' in m]
-        fallback_models = flash_models if flash_models else ["gemini-2.0-flash", "gemini-1.5-flash"]
-    except Exception:
-        fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    # Use only reliable current models
+    fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
     for model_name in fallback_models:
         try:
+            print(f"🧠 Trying {model_name}...")
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
@@ -97,7 +92,7 @@ Output ONLY raw valid JSON:
     return {
         "title": "THE SECRET THEY HIDE",
         "description": "Automated Short #Shorts",
-        "voiceover_script": f"Did you know about {headline}? The elite hide this. Watch till the end.",
+        "voiceover_script": f"Did you know about {headline}? The elite hide this. Watch till the end to find out how this changes everything.",
         "scenes": ["futuristic finance technology", "luxury stock market", "success wealth"]
     }
 
@@ -117,34 +112,41 @@ async def make_tts(text, output="audio.mp3"):
     print(f"✅ Voiceover saved with {len(timings)} word timings.")
     return output, timings
 
-# ─── 4. STOCK VIDEO (Coverr) ─────────────────────────────────────────────────
-def generate_clip(query, index):
-    filename = f"clip_{index}.mp4"
-    print(f"🎬 Fetching video for scene {index + 1}: '{query}'...")
+# ─── 4. AI SCENE GENERATION (Using Meta Muse Image API) ──────────────────────
+def generate_ai_image(prompt, index):
+    filename = f"scene_{index}.jpg"
+    print(f"🎨 Generating AI image for scene {index + 1}: '{prompt}'...")
     try:
-        res = requests.get("https://api.coverr.co/videos", params={"query": query, "sort": "popularity"}, timeout=10).json()
-        if res.get("hits"):
-            vid_data = requests.get(res["hits"][0]["urls"]["mp4_download"], timeout=30).content
-            with open(filename, "wb") as f:
-                f.write(vid_data)
-            print(f"✅ Scene {index + 1} downloaded.")
-            return filename
+        # Meta Model API is OpenAI-compatible
+        client = OpenAI(api_key=META_API_KEY, base_url="https://api.meta.ai/v1")
+        response = client.images.generate(
+            model="muse-image-1.0",
+            prompt=prompt,
+            size="1024x1792", # Vertical aspect ratio
+            response_format="url"
+        )
+        image_url = response.data[0].url
+        img_data = requests.get(image_url, timeout=30).content
+        with open(filename, "wb") as f:
+            f.write(img_data)
+        print(f"✅ Scene {index + 1} image generated.")
+        return filename
     except Exception as e:
-        print(f"⚠️ Coverr failed: {e}")
-
-    print("⚠️ Using fallback background.")
-    clip = ColorClip(size=(1080, 1920), color=(15, 15, 35), duration=6)
-    clip.fps = 30
-    clip.write_videofile(filename, codec="libx264", audio=False, logger=None)
-    return filename
+        print(f"⚠️ Meta Image failed: {e}")
+        # Fallback: create a solid color image
+        from PIL import Image
+        img = Image.new('RGB', (1080, 1920), color=(15, 15, 35))
+        img.save(filename)
+        return filename
 
 # ─── 5. MUSIC & SFX (Stable Public URLs) ─────────────────────────────────────
 def download_music():
     print("🎵 Fetching background music...")
-    music_url = "https://www.bensound.com/bensound-music/bensound-energy.mp3"
+    # Known stable royalty-free MP3
+    music_url = "https://www.learningcontainer.com/wp-content/uploads/2020/02/Kalimba.mp3"
     try:
         resp = requests.get(music_url, timeout=15)
-        if resp.status_code == 200:
+        if resp.status_code == 200 and len(resp.content) > 10000:
             with open("bg_music.mp3", "wb") as f:
                 f.write(resp.content)
             print("✅ Music downloaded.")
@@ -152,9 +154,11 @@ def download_music():
     except Exception as e:
         print(f"⚠️ Music failed: {e}")
     
+    # Fallback: silent audio
     from moviepy.audio.AudioClip import AudioClip
     silent = AudioClip(lambda t: 0, duration=30, fps=44100)
     silent.write_audiofile("bg_music.mp3", logger=None)
+    print("⚠️ Using silent fallback audio.")
     return "bg_music.mp3"
 
 def download_whoosh():
@@ -171,16 +175,19 @@ def download_whoosh():
         print(f"⚠️ Whoosh failed: {e}")
     return None
 
-# ─── 6. RENDER (Rapid Cuts + Captions + Music + SFX) ─────────────────────────
+# ─── 6. RENDER ENGINE ────────────────────────────────────────────────────────
 def render_video(clips, audio_file, timings, metadata, output="final_short.mp4"):
     print("🎞️ Rendering video...")
+    
+    # Load images and apply rapid cuts
     video_clips = []
     for c in clips:
-        base_clip = VideoFileClip(c).resized(height=1920)
+        base_clip = ImageClip(c).with_duration(6).resized(height=1920)
         for start in np.arange(0, base_clip.duration, 1.5):
             end = min(start + 1.5, base_clip.duration)
             if end - start < 0.5: continue
             segment = base_clip.subclipped(start, end)
+            # Ken Burns effect
             segment = segment.with_effects([Resize(lambda t: min(1.15, 1.0 + t * 0.3))])
             video_clips.append(segment)
     
@@ -190,26 +197,44 @@ def render_video(clips, audio_file, timings, metadata, output="final_short.mp4")
     final_duration = min(audio.duration, merged_video.duration)
     final_video = merged_video.subclipped(0, final_duration).with_audio(audio)
 
+    # Captions (Fallback if timings are empty)
     caption_clips = []
-    for i in range(0, len(timings), 2):
-        chunk = timings[i:i+2] if i + 1 < len(timings) else timings[i:i+1]
-        text = " ".join([t["word"] for t in chunk]).upper()
-        start_time = chunk[0]["start"]
-        duration = chunk[-1]["end"] - start_time
-        
-        txt_clip = TextClip(
-            text=text, font_size=90, color='yellow',
-            stroke_color='black', stroke_width=8,
-            font='DejaVuSans-Bold', size=(1000, 300), method='caption'
-        ).with_position(("center", "center")).with_start(start_time).with_duration(duration)
-        caption_clips.append(txt_clip)
+    if not timings:
+        # Create dummy timings if edge-tts failed
+        words = metadata["voiceover_script"].split()
+        chunk_size = max(1, len(words) // 6)
+        time_per_chunk = final_duration / (len(words) / chunk_size)
+        for i in range(0, len(words), chunk_size):
+            chunk = words[i:i+chunk_size]
+            text = " ".join(chunk).upper()
+            start_time = (i // chunk_size) * time_per_chunk
+            txt_clip = TextClip(
+                text=text, font_size=80, color='yellow',
+                stroke_color='black', stroke_width=8,
+                font='DejaVuSans-Bold', size=(1000, 300), method='caption'
+            ).with_position(("center", "center")).with_start(start_time).with_duration(time_per_chunk)
+            caption_clips.append(txt_clip)
+    else:
+        for i in range(0, len(timings), 2):
+            chunk = timings[i:i+2] if i + 1 < len(timings) else timings[i:i+1]
+            text = " ".join([t["word"] for t in chunk]).upper()
+            start_time = chunk[0]["start"]
+            duration = chunk[-1]["end"] - start_time
+            txt_clip = TextClip(
+                text=text, font_size=90, color='yellow',
+                stroke_color='black', stroke_width=8,
+                font='DejaVuSans-Bold', size=(1000, 300), method='caption'
+            ).with_position(("center", "center")).with_start(start_time).with_duration(duration)
+            caption_clips.append(txt_clip)
 
+    # Music
     try:
         bg_music = AudioFileClip(download_music()).with_volume_scaled(0.08).with_duration(final_duration)
         final_video = final_video.with_audio(CompositeAudioClip([final_video.audio, bg_music]))
     except Exception as e:
         print(f"⚠️ Music mix failed: {e}")
 
+    # Whoosh SFX
     whoosh_path = download_whoosh()
     if whoosh_path:
         try:
@@ -248,7 +273,7 @@ def main():
     topic, label = fetch_live_trending_topic()
     storyboard = generate_storyboard(topic, label)
     audio_path, timings = asyncio.run(make_tts(storyboard["voiceover_script"]))
-    scenes = [generate_clip(p, i) for i, p in enumerate(storyboard["scenes"])]
+    scenes = [generate_ai_image(p, i) for i, p in enumerate(storyboard["scenes"])]
     final_mp4 = render_video(scenes, audio_path, timings, storyboard)
     publish_short(final_mp4, storyboard)
 
