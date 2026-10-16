@@ -5,7 +5,6 @@ edge-tts
 feedparser
 google-api-python-client
 google-auth-oauthlib
-opencv-python
 requests
 numpy
 scipy
